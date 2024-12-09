@@ -101,7 +101,6 @@ func main() {
 	db, err := sql.Open("postgres", psqlInfo)
 	if err != nil {
 		log.Fatal(err)
-		fmt.Println("Вы лох")
 	}
 	defer db.Close()
 

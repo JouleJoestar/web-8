@@ -2,11 +2,11 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 
 	_ "github.com/lib/pq"
 )
@@ -27,76 +27,89 @@ type DatabaseProvider struct {
 	db *sql.DB
 }
 
-func (dp *DatabaseProvider) GetCounter() (int, error) {
-	var counter int
-	row := dp.db.QueryRow("SELECT value FROM counter_table LIMIT 1")
-	err := row.Scan(&counter)
+// Обработчики HTTP-запросов
+func (h *Handlers) GetHello(w http.ResponseWriter, r *http.Request) {
+	msg, err := h.dbProvider.SelectHello()
 	if err != nil {
-		return 0, err
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(err.Error()))
 	}
-	return counter, nil
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(msg))
+}
+func (h *Handlers) PostHello(w http.ResponseWriter, r *http.Request) {
+	input := struct {
+		Msg string `json:"msg"`
+	}{}
+
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&input)
+	if err != nil {
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(err.Error()))
+		}
+	}
+
+	err = h.dbProvider.InsertHello(input.Msg)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(err.Error()))
+	}
+
+	w.WriteHeader(http.StatusCreated)
 }
 
-func (dp *DatabaseProvider) UpdateCounter(value int) error {
-	_, err := dp.db.Exec("UPDATE counter_table SET value = value + $1", value)
-	return err
-}
+// Методы для работы с базой данных
+func (dp *DatabaseProvider) SelectHello() (string, error) {
+	var msg string
 
-func (h *Handlers) HandleCount(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		// Получаем текущее значение счетчика
-		counter, err := h.dbProvider.GetCounter()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Увеличиваем счетчик на 1
-		err = h.dbProvider.UpdateCounter(1)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// Возвращаем текущее значение счетчика после увеличения
-		fmt.Fprintf(w, "%d", counter+1) // Увеличиваем на 1 для ответа
-	case "POST":
-		count, err := strconv.Atoi(r.FormValue("count"))
-		if err != nil {
-			http.Error(w, "это не число", http.StatusBadRequest)
-			return
-		}
-		err = h.dbProvider.UpdateCounter(count)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		fmt.Fprintf(w, "Success")
-	default:
-		http.Error(w, "Неизвестный метод", http.StatusMethodNotAllowed)
+	// Получаем одно сообщение из таблицы hello, отсортированной в случайном порядке
+	row := dp.db.QueryRow("SELECT message FROM hello ORDER BY RANDOM() LIMIT 1")
+	err := row.Scan(&msg)
+	if err != nil {
+		return "", err
 	}
+
+	return msg, nil
+}
+func (dp *DatabaseProvider) InsertHello(msg string) error {
+	_, err := dp.db.Exec("INSERT INTO hello (message) VALUES ($1)", msg)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func main() {
-	address := flag.String("address", "127.0.0.1:3333", "адрес для запуска сервера")
+	// Считываем аргументы командной строки
+	address := flag.String("address", "127.0.0.1:8081", "адрес для запуска сервера")
 	flag.Parse()
 
-	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+	// Формирование строки подключения для postgres
+	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s "+
+		"password=%s dbname=%s sslmode=disable",
 		host, port, user, password, dbname)
 
+	// Создание соединения с сервером postgres
 	db, err := sql.Open("postgres", psqlInfo)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
+	// Создаем провайдер для БД с набором методов
 	dp := DatabaseProvider{db: db}
+	// Создаем экземпляр структуры с набором обработчиков
 	h := Handlers{dbProvider: dp}
 
-	http.HandleFunc("/count", h.HandleCount)
+	// Регистрируем обработчики
+	http.HandleFunc("/get", h.GetHello)
+	http.HandleFunc("/post", h.PostHello)
 
-	fmt.Println("Сервер запущен на порту :3333")
+	// Запускаем веб-сервер на указанном адресе
 	err = http.ListenAndServe(*address, nil)
 	if err != nil {
 		log.Fatal(err)
